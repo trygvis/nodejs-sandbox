@@ -1,8 +1,8 @@
 (function () {
-  var xml = require("./node-xml/lib/node-xml");
-  var XMLP = xml.XMLP
+var xml = require("./node-xml/lib/node-xml");
+var XMLP = xml.XMLP
 
-var AtomFeed = function(id, title, subtitle, published, updated, author, links) {
+var AtomFeed = function(id, title, subtitle, published, updated, author, links, entries) {
     return {
         id: id,
         title: title,
@@ -10,14 +10,16 @@ var AtomFeed = function(id, title, subtitle, published, updated, author, links) 
         published: published,
         updated: updated,
         author: author,
-        links: links
+        links: links,
+        entries: entries
     };
 }
 
-var AtomAuthor = function(name, email) {
+var AtomAuthor = function(name, email, uri) {
     return {
         name: name,
-        email: email
+        email: email,
+        uri: uri
     }
 }
 
@@ -29,9 +31,23 @@ var AtomLink = function(href, rel, type) {
     }
 }
 
+var AtomEntry = function(id, title, published, updated, links, content) {
+    return {
+        id: id,
+        title: title,
+        published: published,
+        updated: updated,
+        links: links,
+        content: content
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// XMLP Extras
+
 var next = function(xmlp) {
     var n = xmlp.next();
-    console.log("n=" + n);
+    //console.log("n=" + n);
     return n;
 }
 
@@ -51,6 +67,9 @@ var getText = function(xmlp) {
             case XMLP._TEXT:
                 content += xmlp.getContent().substring(xmlp.getContentBegin(), xmlp.getContentEnd());
                 break;
+            case XMLP._ENTITY:
+                console.log("getText(): WARNING: got an entity in the text, not sure what to do with it.");
+                break;
             default:
                 throw new Error("Invalid content inside element '" + element + "', expected text only. Got " + n + ".");
         }
@@ -61,9 +80,9 @@ var getText = function(xmlp) {
     return content
 }
 
-var skipToStartOfDocument = function(xmlp) {
-    console.log("skipToStartOfDocument")
-    var n = next(xmlp)
+var skipToStartOfFeed = function(xmlp) {
+    console.log("skipToStartOfFeed")
+    var n = next(xmlp);
     while(n != XMLP._ELM_B) {
         switch(n) {
             case XMLP._PI:
@@ -84,9 +103,48 @@ var skipToStartOfDocument = function(xmlp) {
     return n;
 }
 
-var skipWhiteTextToNextElement = function(xmlp) {
-    console.log("skipWhiteTextToNextElement");
+var formatLineColumn = function(xmlp) {
+    return "line " + xmlp.getLineNumber() + ", column " + xmlp.getColumnNumber();
+}
+
+/**
+ * Call next() and return event if it is START_TAG or END_TAG
+ * otherwise throw an exception. It will skip whitespace TEXT before
+ * actual tag if any.
+ */
+/*
+var nextTag = function(xmlp) {
+    console.log("nextTag");
     var n = next(xmlp);
+    
+    if(n == XMLP._TEXT) {
+        var text = xmlp.getContent().substring(xmlp.getContentBegin(), xmlp.getContentEnd());
+        if(text.trim().length == 0) {
+            console.log("nextTag: Skipping " + text.length + " blank characters.");
+            n = next(xmlp);
+        }
+    }
+
+    if(n != XMLP._ELM_B && n != XMLP._ELM_EMP && n != XMLP._ELM_E) {
+        throw new Error("Expected start or end tag at " + formatLineColumn(xmlp) + ".");
+
+        // XMLP tries to optimize which breaks down..
+        if(n == XMLP._ELM_EMP) {
+            return XMLP._ELM_B;
+        }
+    }
+    console.log("nextTag: n=" + n);
+    return n;
+}
+*/
+
+var nextTag = function(xmlp) {
+    console.log("nextTag: current=" + xmlp.getName());
+    var n = next(xmlp);
+    if(n == XMLP._ELM_E) {
+        console.log("nextTag: was empty");
+        return n;
+    }
     while(n != XMLP._ELM_B && n != XMLP._ELM_EMP) {
         switch(n) {
             case XMLP._TEXT:
@@ -95,15 +153,68 @@ var skipWhiteTextToNextElement = function(xmlp) {
                     break;
                 }
                 console.log("text = " + text);
-                throw new Error("Only whitespace text is allowed. Line " + xmlp.getLineNumber() + ", column " + xmlp.getColumnNumber() + ".");
+                throw new Error("Only whitespace text is allowed. " + formatLineColumn(xmlp) + ".");
+            case XMLP._ELM_E:
+                return n;
             default:
-                throw new Error("Unexpected XMLP element: " + n);
+                throw new Error("Unexpected XMLP element: " + n + " at " + formatLineColumn(xmlp) + ".");
         }
         n = next(xmlp);
     }
-    console.log("skipWhiteTextToNextElement: next is " + xmlp.getName());
+    if(n == XMLP._ELM_EMP) {
+        n = XMLP._ELM_B;
+    }
+    console.log("nextTag: next=" + xmlp.getName() + ", n=" + n);
     return n;
 }
+
+/**
+ * Consume an element and all elements it is containing.
+ */
+var consumeElement = function(xmlp) {
+    console.log("consumeElement: Consuming " + xmlp.getName());
+    var i = 1;
+    var n = next(xmlp);
+    while(i > 0) {
+        switch(n) {
+            case XMLP._ELM_B:
+                console.log("consumeElement: i=" + i + ", begin=" + xmlp.getName());
+                i++;
+                break;
+            case XMLP._ELM_E:
+                console.log("consumeElement: i=" + i + ", end=" + xmlp.getName());
+                i--;
+                break;
+        }
+        n = next(xmlp);
+    }
+    console.log("consumeElement: n=" + n);
+    return n;
+}
+
+/**
+ * Annoyingly XMLP has several codes that indicate failure.
+ */
+var hasMore = function(n) {
+    switch(n) {
+        case XMLP._ELM_B:
+        case XMLP._ELM_E:
+        case XMLP._ELM_EMP:
+        case XMLP._ATT:
+        case XMLP._TEXT:
+        case XMLP._ENTITY:
+        case XMLP._PI:
+        case XMLP._CDATA:
+        case XMLP._COMMENT:
+        case XMLP._DTD:
+            return true;
+        default:
+            return false;
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// Atom Feed Parser
 
 var parseDate = function(s) {
     // TODO: Create a date object
@@ -117,18 +228,30 @@ var xmlpToAtomLink = function(xmlp) {
 }
 
 var xmlpToAtomAuthor = function(xmlp) {
-    consumeElement(xmlp);
-    return new AtomAuthor();
+    console.log("xmlpToAtomAuthor");
+    var name, email, uri;
+    while(nextTag(xmlp) == XMLP._ELM_B) {
+        var name = xmlp.getName();
+        console.log("xmlpToAtomAuthor: name = " + name);
+        switch(name) {
+            case "name": name = getText(xmlp); break;
+            case "email": email = getText(xmlp); break;
+            case "uri": uri = getText(xmlp); break;
+            default:
+                throw new Error("Unknown element: " + name);
+                consumeElement(xmlp);
+        }
+    }
+    return new AtomAuthor(name, email, uri);
 }
 
 var xmlpToAtomEntry = function(xmlp) {
     console.log("xmlpToAtomEntry");
-    var id, title, subtitle, published, updated, author;
+    var id, title, published, updated, author;
     var links = new Array();
-    var n = skipWhiteTextToNextElement(xmlp)
-    while(n == XMLP._ELM_B || n == XMLP._ELM_EMP) {
+    while(nextTag(xmlp) == XMLP._ELM_B) {
         var name = xmlp.getName();
-        console.log("name = " + name);
+        console.log("xmlpToAtomEntry: name = " + name);
         switch(name) {
             case "id": id = getText(xmlp); break;
             case "title": title = getText(xmlp); break;
@@ -136,42 +259,49 @@ var xmlpToAtomEntry = function(xmlp) {
             case "published": published = parseDate(getText(xmlp)); break;
             case "updated": updated = parseDate(getText(xmlp)); break;
             case "author": author = xmlpToAtomAuthor(xmlp); break;
-            case "entry": entries = xmlpToAtomEntry(xmlp); break;
+            case "content": content = getText(xmlp); break; // TODO: Handle multiple content elements
+            case "media:thumbnail": /* TODO: consume element */ break;
             default:
                 throw new Error("Unknown element: " + name);
+                consumeElement(xmlp);
         }
-        n = skipWhiteTextToNextElement(xmlp)
     }
-    return new AtomEntry(id, title, subtitle, published, updated, author, links)
+
+    return new AtomEntry(id, title, published, updated, author, links)
 }
 
-var xmlpToAtomDocument = function(xmlp) {
-    console.log("xmlpToAtomDocument");
+var xmlpToAtomFeed = function(xmlp) {
+    console.log("xmlpToAtomFeed");
     var id, title, subtitle, published, updated, author;
     var links = new Array();
-    skipToStartOfDocument(xmlp)
+    var entries = new Array();
+    skipToStartOfFeed(xmlp)
     if(xmlp.getName() != "feed") {
         throw new Error("Invalid root tag: expected 'feed', found '" + xmlp.getName() + "'")
     }
-    var n = skipWhiteTextToNextElement(xmlp)
-    while(n == XMLP._ELM_B || n == XMLP._ELM_EMP) {
-        var name = xmlp.getName();
-        console.log("name = " + name);
-        switch(name) {
-            case "id": id = getText(xmlp); break;
-            case "title": title = getText(xmlp); break;
-            case "link": links.push(xmlpToAtomLink(xmlp)); break;
-            case "published": published = parseDate(getText(xmlp)); break;
-            case "updated": updated = parseDate(getText(xmlp)); break;
-            case "entry": entries = xmlpToAtomEntry(xmlp); break;
-            default:
-                throw new Error("Unknown element: " + name);
+    var n = nextTag(xmlp)
+    while(hasMore(n)) {
+        if(n == XMLP._ELM_B || n == XMLP._ELM_EMP) {
+            var name = xmlp.getName();
+            console.log("xmlpToAtomFeed: name = " + name);
+            switch(name) {
+                case "id": id = getText(xmlp); break;
+                case "title": title = getText(xmlp); break;
+                case "link": links.push(xmlpToAtomLink(xmlp)); break;
+                case "published": published = parseDate(getText(xmlp)); break;
+                case "updated": updated = parseDate(getText(xmlp)); break;
+                case "entry": entries.push(xmlpToAtomEntry(xmlp)); break;
+                default:
+                    throw new Error("Unknown element: " + name);
+            }
         }
-        n = skipWhiteTextToNextElement(xmlp)
+        n = next(xmlp);
     }
-    return new AtomFeed(id, title, subtitle, published, updated, author, links)
+    return new AtomFeed(id, title, subtitle, published, updated, author, links, entries)
 }
 
-exports.xmlpToAtomDocument = xmlpToAtomDocument
+exports.xmlpToAtomFeed = xmlpToAtomFeed;
+exports.consumeElement = consumeElement;
+exports.nextTag = nextTag;
 
 })()
